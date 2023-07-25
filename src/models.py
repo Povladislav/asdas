@@ -1,6 +1,7 @@
 from sqlalchemy import Column, Integer, String
-
-from src.database.database import Base, engine
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.future import select
+from .database import Base, engine
 
 
 class TaskDB(Base):
@@ -12,4 +13,6 @@ class TaskDB(Base):
     status = Column(String, index=True)
 
 
-
+async def create_tables():
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
