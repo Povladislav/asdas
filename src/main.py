@@ -53,7 +53,8 @@ class Task(BaseModel):
 async def create_task(task: Task, background_tasks: BackgroundTasks):
     async with async_session_maker() as session:
         task_count = await session.execute(select(func.count(TaskDB.task_number)))
-        task_number = task_count.scalar() + 1 if task_count.scalar() else 1
+        task_number = task_count.scalar()
+        task_number = task_number + 1 if task_number else 1
 
         task_db = TaskDB(
             task_number=task_number,
@@ -64,7 +65,7 @@ async def create_task(task: Task, background_tasks: BackgroundTasks):
         session.add(task_db)
         await session.commit()
 
-    background_tasks.add_task(update_task_status, task_number, task.waiting_time)
+    background_tasks.add_task(update_task_status, task_number=task_number, waiting_time=task.waiting_time)
     return {"task_number": task_number}
 
 
