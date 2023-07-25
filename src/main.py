@@ -1,16 +1,46 @@
 from fastapi import FastAPI, HTTPException, BackgroundTasks
 import random
 import asyncio
-
-from pydantic import BaseModel
+from sqlalchemy import Column, Integer, String, func
+from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
+from sqlalchemy.orm import declarative_base, sessionmaker
 from sqlalchemy.future import select
-
-from src.database.database import async_session_maker
-from src.models.tasks import TaskDB
+from pydantic import BaseModel
+from src.config import Settings
 
 app = FastAPI()
+settings = Settings()
+
+DATABASE_URL = f"postgresql+asyncpg://{settings.POSTGRES_USER}:{settings.POSTGRES_PASSWORD}@{settings.POSTGRES_HOST}:{settings.DB_PORT}/{settings.POSTGRES_DB}"
+
+Base = declarative_base()
 
 
+class TaskDB(Base):
+    __tablename__ = "tasks"
+
+    task_number = Column(Integer, primary_key=True, index=True)
+    task_title = Column(String, index=True)
+    waiting_time = Column(Integer)
+    status = Column(String, index=True)
+
+
+engine = create_async_engine(DATABASE_URL, echo=True)
+async_session_maker = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+
+
+async def create_tables():
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+
+
+# Создание таблицы при старте приложения
+@app.on_event("startup")
+async def startup_event():
+    await create_tables()
+
+
+# Pydantic модель для задачи (task)
 class Task(BaseModel):
     task_number: int
     task_title: str
@@ -18,33 +48,15 @@ class Task(BaseModel):
     status: str
 
 
-async def process_tasks():
-    while True:
-        await asyncio.sleep(5)  # Adjust the polling interval as needed
-        async with async_session_maker as session:
-            tasks = await session.execute(
-                select(TaskDB).where(TaskDB.status == 'waiting').where(TaskDB.waiting_time <= 0)
-            )
-            for task in tasks.scalars():
-                task.status = "done"
-            await session.commit()
-
-
-# Start the background task processing
-@app.on_event("startup")
-async def startup_event():
-    asyncio.create_task(process_tasks())
-
-
 # Endpoint to accept new tasks and put them in the queue
 @app.post("/tasks/", status_code=200)
 async def create_task(task: Task, background_tasks: BackgroundTasks):
-    async with async_session_maker as session:
-        task_number = await session.execute(select(TaskDB).count() + 1)
-        task.task_number = task_number.scalar()
+    async with async_session_maker() as session:
+        task_count = await session.execute(select(func.count(TaskDB.task_number)))
+        task_number = task_count.scalar() + 1 if task_count.scalar() else 1
 
         task_db = TaskDB(
-            task_number=task.task_number,
+            task_number=task_number,
             task_title=task.task_title,
             waiting_time=task.waiting_time,
             status="waiting"
@@ -52,14 +64,14 @@ async def create_task(task: Task, background_tasks: BackgroundTasks):
         session.add(task_db)
         await session.commit()
 
-    background_tasks.add_task(update_task_status, task.task_number, task.waiting_time)
-    return {"task_number": task.task_number}
+    background_tasks.add_task(update_task_status, task_number, task.waiting_time)
+    return {"task_number": task_number}
 
 
 # Function to update task status after waiting time
 async def update_task_status(task_number: int, waiting_time: int):
     await asyncio.sleep(waiting_time)
-    async with async_session_maker as session:
+    async with async_session_maker() as session:
         task_db = await session.get(TaskDB, task_number)
         if task_db and task_db.status == "waiting":
             task_db.status = "done"
@@ -69,7 +81,7 @@ async def update_task_status(task_number: int, waiting_time: int):
 # Endpoint to get the status of a specific task by its task number
 @app.get("/tasks/{task_number}/", status_code=200)
 async def get_task_status(task_number: int):
-    async with async_session_maker as session:
+    async with async_session_maker() as session:
         task_db = await session.get(TaskDB, task_number)
         if task_db:
             return Task(

@@ -12,4 +12,4 @@ class TaskDB(Base):
     status = Column(String, index=True)
 
 
-Base.metadata.create_all(bind=engine)
+
